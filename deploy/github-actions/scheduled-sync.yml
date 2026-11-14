@@ -1,0 +1,45 @@
+# Optional: run the connector on GitHub instead of your own computer.
+#
+# To enable, move this file to .github/workflows/scheduled-sync.yml and add
+# the secrets GOOGLE_EMAIL, GOOGLE_MASTER_TOKEN, BRING_EMAIL and BRING_PASSWORD
+# (Settings -> Secrets and variables -> Actions). See README "Option C".
+#
+# Every 30 minutes keeps a private repository within the free 2,000
+# minutes/month. GitHub may start scheduled runs late when it is busy.
+
+name: Scheduled sync
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-to-bring-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install .
+      - name: Copy new Google Keep items to Bring!
+        run: keep-to-bring once
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_MASTER_TOKEN: ${{ secrets.GOOGLE_MASTER_TOKEN }}
+          GOOGLE_EMAIL_2: ${{ secrets.GOOGLE_EMAIL_2 }}
+          GOOGLE_MASTER_TOKEN_2: ${{ secrets.GOOGLE_MASTER_TOKEN_2 }}
+          BRING_EMAIL: ${{ secrets.BRING_EMAIL }}
+          BRING_PASSWORD: ${{ secrets.BRING_PASSWORD }}
+          BRING_LIST_NAME: ${{ vars.BRING_LIST_NAME }}
+          KEEP_LIST_TITLES: ${{ vars.KEEP_LIST_TITLES }}
