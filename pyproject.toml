@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keep-to-bring"
+version = "1.0.0"
+description = "Get Google Home voice shopping-list items into the Bring! app (via Google Keep)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gkeepapi>=0.16,<0.18",
+    "gpsoauth>=1.1",
+    "bring-api>=1.1,<2",
+    "aiohttp>=3.10",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+keep-to-bring = "keep_to_bring.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

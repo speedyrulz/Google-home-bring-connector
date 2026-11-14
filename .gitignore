@@ -1,0 +1,16 @@
+# Secrets and runtime state - never commit these
+.env
+*.env
+!.env.example
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/

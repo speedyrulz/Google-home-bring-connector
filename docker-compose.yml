@@ -1,0 +1,23 @@
+# Usage (from this folder):
+#   mkdir -p data                                   # once, before anything else
+#   docker compose build
+#   docker compose run --rm keep-to-bring setup     # answers saved to ./data/.env
+#   docker compose up -d                            # start in the background
+#   docker compose logs -f                          # watch what it does (Ctrl+C to stop watching)
+
+services:
+  keep-to-bring:
+    build: .
+    image: keep-to-bring:latest
+    container_name: keep-to-bring
+    restart: unless-stopped
+    # The container writes its settings and status into ./data. If your user
+    # id on this machine isn't 1000 (check with `id -u`), set PUID/PGID.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
