@@ -24,6 +24,8 @@ _LOGGER = logging.getLogger(__name__)
 # Bring's internal catalogue keys are Swiss German; that locale needs no file.
 BRING_KEY_LOCALE = "de-CH"
 _ENGLISH_FILLERS = ("some ", "more ", "a ", "an ", "the ")
+# Dropped from custom (non-catalogue) item names: "a tin foil" -> "Tin foil".
+_CUSTOM_ITEM_FILLERS = ("some ", "more ", "a ", "an ")
 _VOWELS = set("aeiou")
 
 
@@ -127,6 +129,11 @@ class Catalog:
         matched = self.match(name)
         if matched:
             return matched
+        if self._english:
+            for filler in _CUSTOM_ITEM_FILLERS:
+                if name.lower().startswith(filler) and len(name) > len(filler):
+                    name = name[len(filler):]
+                    break
         if name.islower():
             return name[:1].upper() + name[1:]
         return name

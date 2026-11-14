@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import gpsoauth
 
+from .net import install_request_timeouts
+
 EMBEDDED_SETUP_URL = "https://accounts.google.com/EmbeddedSetup"
 
 COOKIE_INSTRUCTIONS = f"""\
@@ -61,6 +63,7 @@ def exchange_oauth_cookie(email: str, oauth_cookie: str, device_id: str) -> str:
             "That doesn't look like the oauth_token cookie (it should start with "
             "'oauth2_4/'). Make sure you copied the Value of the row named oauth_token."
         )
+    install_request_timeouts()
     try:
         response = gpsoauth.exchange_token(email.strip(), token, device_id)
     except Exception as err:  # noqa: BLE001 - network errors etc.

@@ -4,7 +4,8 @@ Uses the unofficial ``gkeepapi`` library: Google's official Keep API is only
 available to Google Workspace business accounts, not personal Gmail accounts.
 
 All methods here are blocking (``gkeepapi`` uses ``requests``); the sync
-engine runs them in a worker thread.
+engine runs them in a worker thread. Every request gets a timeout (see
+``net.py``) because gkeepapi itself never sets one.
 """
 
 from __future__ import annotations
@@ -20,15 +21,37 @@ from gkeepapi import exception as keep_exc
 from gkeepapi import node as keep_node
 
 from .config import GoogleAccount
+from .net import install_request_timeouts
 
 _LOGGER = logging.getLogger(__name__)
 
 AUTH_RETRY_BASE_SECONDS = 300.0
 AUTH_RETRY_MAX_SECONDS = 3600.0
 
+# gpsoauth "Error" values that really mean the saved login is no good.
+# Anything else (an outage page, "ServiceUnavailable", no answer at all) is
+# treated as temporary, so a Google hiccup doesn't raise a false alarm.
+CREDENTIAL_ERRORS = frozenset(
+    {
+        "BadAuthentication",
+        "NeedsBrowser",
+        "NotVerified",
+        "TermsNotAgreed",
+        "CaptchaRequired",
+        "AccountDeleted",
+        "AccountDisabled",
+        "ServiceDisabled",
+        "DeviceManagementRequiredOrSyncDisabled",
+    }
+)
+
 
 class KeepAuthError(Exception):
     """Google rejected the master token (revoked, expired or wrong)."""
+
+
+class KeepTemporaryError(Exception):
+    """Google answered unexpectedly; retry later (the login is probably fine)."""
 
 
 @dataclass
@@ -64,6 +87,7 @@ class KeepSource:
         self._warned_missing = False
         self._auth_failures = 0
         self.retry_at = 0.0
+        install_request_timeouts()
 
     @property
     def email(self) -> str:
@@ -104,36 +128,32 @@ class KeepSource:
                 self.account.master_token,
                 device_id=self.account.device_id,
             )
-        except keep_exc.LoginException as err:
-            self._auth_failed()
-            raise KeepAuthError(_auth_message(self.email, err)) from err
-        except keep_exc.APIException as err:
-            if err.code == 401:
-                self._auth_failed()
-                raise KeepAuthError(_auth_message(self.email, err)) from err
-            raise
+        except (keep_exc.LoginException, keep_exc.APIException) as err:
+            translated = self._classify(err)
+            if translated is err:
+                raise
+            raise translated from err
         self._keep = keep
         self._auth_failures = 0
         self.retry_at = 0.0
         _LOGGER.info("Connected to Google Keep as %s", self.email)
 
-    def _sync(self) -> None:
+    def _sync(self) -> bool:
+        """Sync with Google. True if Google forced a full resync (local edits discarded)."""
+        resynced = False
         try:
             try:
                 self._keep.sync()
             except keep_exc.ResyncRequiredException:
                 _LOGGER.info("Google Keep asked for a full resync (%s)", self.email)
                 self._keep.sync(resync=True)
-        except keep_exc.LoginException as err:
-            self._auth_failed()
+                resynced = True
+        except (keep_exc.LoginException, keep_exc.APIException) as err:
             self.reset()
-            raise KeepAuthError(_auth_message(self.email, err)) from err
-        except keep_exc.APIException as err:
-            self.reset()
-            if err.code == 401:
-                self._auth_failed()
-                raise KeepAuthError(_auth_message(self.email, err)) from err
-            raise
+            translated = self._classify(err)
+            if translated is err:
+                raise
+            raise translated from err
         except Exception:
             # gkeepapi clears its "dirty" flags *before* sending, so after a
             # failed request local edits (our deletions) are silently dropped
@@ -143,10 +163,31 @@ class KeepSource:
             raise
         self._auth_failures = 0
         self.retry_at = 0.0
+        return resynced
+
+    def _classify(self, err: Exception) -> Exception:
+        """Turn a gkeepapi error into KeepAuthError (bad login) or a temporary error."""
+        if isinstance(err, keep_exc.BrowserLoginRequiredException):
+            self._auth_failed()
+            return KeepAuthError(_auth_message(self.email, "NeedsBrowser"))
+        if isinstance(err, keep_exc.LoginException):
+            code = str(err.args[0]) if err.args and err.args[0] else ""
+            if code in CREDENTIAL_ERRORS:
+                self._auth_failed()
+                return KeepAuthError(_auth_message(self.email, code))
+            return KeepTemporaryError(
+                f"Google's login service gave an unexpected answer for {self.email} "
+                f"({code or 'no details'}); will retry."
+            )
+        if isinstance(err, keep_exc.APIException) and err.code == 401:
+            self._auth_failed()
+            return KeepAuthError(_auth_message(self.email, "HTTP 401"))
+        return err
 
     def _auth_failed(self) -> None:
         self._auth_failures += 1
-        delay = min(AUTH_RETRY_BASE_SECONDS * 2 ** (self._auth_failures - 1), AUTH_RETRY_MAX_SECONDS)
+        exponent = min(self._auth_failures - 1, 10)  # avoid huge numbers after weeks of failures
+        delay = min(AUTH_RETRY_BASE_SECONDS * 2**exponent, AUTH_RETRY_MAX_SECONDS)
         self.retry_at = self._clock() + delay
 
     # ------------------------------------------------------------------
@@ -209,12 +250,16 @@ class KeepSource:
 
     def push(self) -> None:
         """Send local changes (deleted/ticked items) to Google."""
-        if self._keep is not None:
-            self._sync()
+        if self._keep is not None and self._sync():
+            # A forced resync throws away local edits, so we can't be sure the
+            # items were cleared. Say so; the next cycle re-checks them.
+            raise KeepTemporaryError(
+                "Google Keep asked for a full resync before the copied items could be "
+                "cleared; will retry."
+            )
 
 
-def _auth_message(email: str, err: Exception) -> str:
-    detail = str(err) or type(err).__name__
+def _auth_message(email: str, detail: str) -> str:
     return (
         f"Google refused the saved login for {email} ({detail}). The master token was "
         "probably revoked (this happens after a password change, a security check, or "

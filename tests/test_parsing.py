@@ -81,3 +81,37 @@ def test_split_entries_keeps_known_products_together():
 def test_label():
     assert ParsedItem("Milk", "2 gallons").label() == "Milk (2 gallons)"
     assert ParsedItem("Milk").label() == "Milk"
+
+
+@pytest.mark.parametrize(
+    ("text", "name", "spec"),
+    [
+        # Numbers that describe the product, not how many to buy.
+        ("9 volt batteries", "batteries", "9 volt"),
+        ("40 watt bulbs", "bulbs", "40 watt"),
+        ("9 inch pie crust", "pie crust", "9 inch"),
+        ("3 ply toilet paper", "toilet paper", "3 ply"),
+        ("100 count paper plates", "paper plates", "100 count"),
+        ("one a day vitamins", "one a day vitamins", ""),
+        ("five spice", "five spice", ""),
+        ("8 o'clock coffee", "8 o'clock coffee", ""),
+        # A unit word that is really part of the product name.
+        ("a can opener", "a can opener", ""),
+        ("a bottle opener", "a bottle opener", ""),
+        ("a box cutter", "a box cutter", ""),
+        ("a tin foil", "a tin foil", ""),
+        ("2 can openers", "can openers", "2"),  # two can openers, not "openers (2 can)"
+        # Articles still work as amounts with "of", and "a dozen" without.
+        ("a can of soup", "soup", "1 can"),
+        ("a dozen eggs", "eggs", "1 dozen"),
+        # Decimal commas.
+        ("1,5 kg pork belly", "pork belly", "1,5 kg"),
+    ],
+)
+def test_review_regressions(text, name, spec):
+    assert parse_quantity(text) == ParsedItem(name, spec)
+
+
+def test_decimal_comma_is_not_split():
+    assert split_entries("1,5 kg pork belly", split_items=True) == ["1,5 kg pork belly"]
+    assert split_entries("0,5 l oat cream, eggs", split_items=True) == ["0,5 l oat cream", "eggs"]

@@ -44,7 +44,10 @@ def clean_text(text: str) -> str:
 # Splitting "milk, eggs and bread" into separate items (opt-in)
 # --------------------------------------------------------------------------
 
-_SPLIT = re.compile(r"\s*[,;]\s*(?:and\s+|&\s*)?|\s+(?:and|&|plus)\s+", re.IGNORECASE)
+# Commas between two digits are decimal commas ("1,5 kg"), never separators.
+_SPLIT = re.compile(
+    r"\s*(?:;|(?<!\d),|,(?!\d))\s*(?:and\s+|&\s*)?|\s+(?:and|&|plus)\s+", re.IGNORECASE
+)
 
 # Common products whose names contain "and"/"&" and must never be split.
 _UNSPLITTABLE = {
@@ -108,7 +111,8 @@ _UNITS = sorted(
         "carton", "cartons", "container", "containers", "tub", "tubs", "tray", "trays",
         "bunch", "bunches", "head", "heads", "loaf", "loaves",
         "stick", "sticks", "roll", "rolls", "slice", "slices", "piece", "pieces",
-        "pc", "pcs", "block", "blocks", "dozen", "dozens",
+        "pc", "pcs", "block", "blocks", "dozen", "dozens", "count", "ct",
+        "volt", "volts", "watt", "watts", "inch", "inches", "ply",
     },
     key=len,
     reverse=True,
@@ -126,7 +130,7 @@ _DIGITS = r"(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:[.,]\d+)?[½¼¾]?|[½¼¾⅓⅔])"
 # Digits may touch the unit ("500g"); words need a space ("a pack", not "apack").
 _WITH_UNIT = re.compile(
     rf"^(?:(?P<dqty>{_DIGITS})\s*-?\s*|(?P<wqty>{_WORD_NUMBER}|half(?:\s+an?)?|an?)\s+)"
-    rf"(?P<unit>{_UNIT})\.?\s+(?:of\s+)?(?P<name>.+)$",
+    rf"(?P<unit>{_UNIT})\.?\s+(?P<of>of\s+)?(?P<name>.+)$",
     re.IGNORECASE,
 )
 # Bare number: "3 apples", "two onions", "2x milk", "2 x milk"
@@ -145,6 +149,13 @@ _TRAILING = re.compile(
 _NOT_A_QUANTITY_NEXT_WORDS = {
     "percent", "%", "up", "grain", "grains", "hour", "lives", "layer", "musketeers",
     "bean", "alarm", "minute", "day", "in", "year", "way", "star", "seas",
+    "a", "spice", "o'clock", "oclock", "speed",
+}
+# Words that make "<unit> <word>" a single thing rather than an amount:
+# "2 can openers", "a box cutter", "3 bag clips", "tin foil".
+_NOT_AFTER_UNIT = {
+    "opener", "openers", "cutter", "cutters", "foil", "clip", "clips", "liner", "liners",
+    "holder", "holders", "rack", "racks", "sealer", "sealers", "lid", "lids",
 }
 
 
@@ -164,7 +175,7 @@ def parse_quantity(text: str) -> ParsedItem:
     text = clean_text(text)
 
     match = _WITH_UNIT.match(text)
-    if match and _plausible_name(match.group("name")):
+    if match and _plausible_name(match.group("name")) and _unit_is_amount(match):
         unit = _WHITESPACE.sub(" ", match.group("unit").lower())
         qty = match.group("dqty") or match.group("wqty")
         spec = f"{_normalise_qty(qty)} {unit}"
@@ -182,6 +193,17 @@ def parse_quantity(text: str) -> ParsedItem:
         return ParsedItem(clean_text(match.group("name")), clean_text(spec))
 
     return ParsedItem(text)
+
+
+def _unit_is_amount(match: re.Match[str]) -> bool:
+    """Reject "a can opener" / "2 box cutters", where the unit is part of the name."""
+    first_word = match.group("name").split()[0].lower()
+    if not match.group("of") and first_word in _NOT_AFTER_UNIT:
+        return False
+    article = (match.group("wqty") or "").lower() in {"a", "an"}
+    if article and not match.group("of") and not match.group("unit").lower().startswith("dozen"):
+        return False  # "a bag of chips" is an amount; "a tin foil" is not
+    return True
 
 
 def _plausible_name(name: str) -> bool:

@@ -1,7 +1,7 @@
 import aiohttp
 import pytest
 
-from keep_to_bring.bring_sink import BringAuthError, BringListNotFound, BringSink
+from keep_to_bring.bring_sink import BringAuthError, BringListItem, BringListNotFound, BringSink
 
 
 async def connected(server, list_name=None) -> tuple[BringSink, aiohttp.ClientSession]:
@@ -53,7 +53,10 @@ async def test_add_translates_to_catalogue_key(bring_server):
         # Bring stores catalogue items under their (Swiss German) key, so the
         # app shows the right icon and aisle.
         assert bring_server.purchase["list-home"] == {"Milch": "2 gallons", "Rex chew toy": ""}
-        assert await sink.current_items() == {"milk": "2 gallons", "rex chew toy": ""}
+        assert await sink.current_items() == {
+            "milk": BringListItem("Milk", "2 gallons"),
+            "rex chew toy": BringListItem("Rex chew toy", ""),
+        }
     finally:
         await session.close()
 

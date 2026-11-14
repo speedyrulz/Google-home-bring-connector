@@ -160,3 +160,19 @@ def test_device_id_is_stable_and_android_shaped():
     assert default_device_id("Me@Example.com ") == default_device_id("me@example.com")
     assert len(default_device_id("me@example.com")) == 16
     int(default_device_id("me@example.com"), 16)
+
+
+def test_write_env_file_removes_duplicate_keys(tmp_path):
+    # A hand-edited file with the same key twice: the last one would win when
+    # read back, so writing must replace *all* of them.
+    path = tmp_path / ".env"
+    path.write_text("GOOGLE_MASTER_TOKEN=aas_et/old1\nX=1\nGOOGLE_MASTER_TOKEN=aas_et/old2\n", encoding="utf-8")
+    write_env_file(path, {"GOOGLE_MASTER_TOKEN": "aas_et/new"})
+    assert parse_env_file(path) == {"GOOGLE_MASTER_TOKEN": "aas_et/new", "X": "1"}
+    assert path.read_text(encoding="utf-8").count("GOOGLE_MASTER_TOKEN") == 1
+
+
+def test_quoted_value_with_trailing_comment(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("A='my pass' # note\nB=\"say \\\"hi\\\"\"  # note\n", encoding="utf-8")
+    assert parse_env_file(path) == {"A": "my pass", "B": 'say "hi"'}

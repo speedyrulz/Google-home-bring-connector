@@ -31,6 +31,7 @@ from .config import (
 )
 from .google_token import COOKIE_INSTRUCTIONS, TokenExchangeError, exchange_oauth_cookie
 from .keep_source import KeepAuthError, KeepSource
+from .net import run_blocking
 from .sync import Connector, run_forever, write_heartbeat
 
 _LOGGER = logging.getLogger("keep_to_bring")
@@ -380,7 +381,7 @@ async def _check(settings: Settings) -> int:
         connector = _connector(settings, sink)
         for source in connector.sources:
             try:
-                entries = await asyncio.to_thread(source.pull)
+                entries = await run_blocking(source.pull)
             except KeepAuthError as err:
                 ok = False
                 print(f"[FAIL] Google Keep ({source.email}): {err}")

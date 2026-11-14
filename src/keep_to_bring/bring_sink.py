@@ -36,6 +36,14 @@ class BringListInfo:
     name: str
 
 
+@dataclass(frozen=True)
+class BringListItem:
+    """An item currently on the list, with its exact name as Bring! has it."""
+
+    name: str
+    spec: str
+
+
 class BringSink:
     def __init__(
         self,
@@ -131,11 +139,14 @@ class BringSink:
             await self._login()
             return await func(*args)
 
-    async def current_items(self) -> dict[str, str]:
-        """Items currently on the list (to buy): ``{casefolded name: specification}``."""
+    async def current_items(self) -> dict[str, BringListItem]:
+        """Items currently on the list (to buy), keyed by casefolded name."""
         assert self.list is not None, "connect() first"
         response = await self._call(self._bring.get_list, self.list.uuid)
-        return {item.itemId.casefold(): item.specification for item in response.items.purchase}
+        return {
+            item.itemId.casefold(): BringListItem(item.itemId, item.specification)
+            for item in response.items.purchase
+        }
 
     async def add(self, name: str, spec: str = "") -> None:
         """Add an item (or update its specification if it's already on the list)."""

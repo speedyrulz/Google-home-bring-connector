@@ -70,3 +70,9 @@ def test_unknown_locale_gives_empty_catalogue():
 
 def test_empty_catalogue():
     assert Catalog.empty().match("milk") is None
+
+
+def test_custom_items_drop_leading_article(en_us):
+    assert en_us.display_name("a tin foil") == "Tin foil"
+    assert en_us.display_name("some birthday candles") == "Birthday candles"
+    assert en_us.display_name("a") == "A"

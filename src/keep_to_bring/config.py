@@ -72,6 +72,9 @@ class Settings:
 _ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 
 
+_QUOTED_WITH_COMMENT = re.compile(r"""^(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\s*(?:#.*)?$""")
+
+
 def _unquote(raw: str) -> str:
     raw = raw.strip()
     if len(raw) >= 2 and raw[0] == raw[-1] == "'":
@@ -79,6 +82,12 @@ def _unquote(raw: str) -> str:
     if len(raw) >= 2 and raw[0] == raw[-1] == '"':
         inner = raw[1:-1]
         return re.sub(r'\\(["\\])', r"\1", inner)
+    # Quoted value followed by a comment: KEY='value'  # note
+    match = _QUOTED_WITH_COMMENT.match(raw)
+    if match:
+        if match.group(1) is not None:
+            return match.group(1)
+        return re.sub(r'\\(["\\])', r"\1", match.group(2))
     # Unquoted: allow trailing " # comment".
     return re.split(r"\s+#", raw, maxsplit=1)[0].strip()
 
@@ -114,18 +123,21 @@ def write_env_file(path: Path, updates: Mapping[str, str | None], header: str | 
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     if not lines and header:
         lines = header.rstrip("\n").splitlines() + [""]
-    remaining = dict(updates)
+    written: set[str] = set()
     out: list[str] = []
     for line in lines:
         match = _ENV_LINE.match(line)
-        if match and not line.strip().startswith("#") and match.group(1) in remaining:
-            value = remaining.pop(match.group(1))
-            if value is not None:
-                out.append(f"{match.group(1)}={_quote(value)}")
+        key = match.group(1) if match and not line.strip().startswith("#") else None
+        if key is not None and key in updates:
+            # Replace the first occurrence; drop any duplicates, which would
+            # otherwise win when the file is read back (last one wins).
+            if key not in written and updates[key] is not None:
+                out.append(f"{key}={_quote(updates[key])}")
+            written.add(key)
             continue
         out.append(line)
-    for key, value in remaining.items():
-        if value is not None:
+    for key, value in updates.items():
+        if key not in written and value is not None:
             out.append(f"{key}={_quote(value)}")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

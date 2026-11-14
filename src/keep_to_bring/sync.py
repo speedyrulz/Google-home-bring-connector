@@ -9,6 +9,7 @@ list are skipped, a retry never creates duplicates.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -16,9 +17,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .bring_sink import BringAuthError, BringListNotFound, BringSink
+from .bring_sink import BringAuthError, BringListItem, BringListNotFound, BringSink
 from .config import GoogleAccount
 from .keep_source import KeepAuthError, KeepEntry, KeepSource
+from .net import run_blocking
 from .parsing import ParsedItem, parse_quantity, split_entries
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,18 +30,28 @@ _LOGGER = logging.getLogger(__name__)
 # logs. Removed again automatically once the login works.
 ALERT_ITEM_NAME = "⚠ Voice list: fix Google login"
 MAX_BACKOFF_SECONDS = 1800.0
+# A whole cycle normally takes a few seconds. If it takes longer than this,
+# something is stuck: abandon it, start fresh, and carry on.
+CYCLE_TIMEOUT_SECONDS = 600.0
+
+
+def _spec_parts(spec: str) -> list[str]:
+    return [part.strip() for part in spec.split(",") if part.strip()]
 
 
 def merge_spec(current: str, new: str) -> str:
-    """Combine an existing Bring! specification with a newly spoken one."""
-    current, new = current.strip(), new.strip()
-    if not new:
-        return current
-    if not current:
-        return new
-    if new.casefold() in current.casefold():
-        return current
-    return f"{current}, {new}"
+    """Combine an existing Bring! specification with a newly spoken one.
+
+    Works on comma-separated parts, so "12" + "2" gives "12, 2" (not "12"),
+    and merging the same spec again changes nothing (safe to retry).
+    """
+    current_parts = _spec_parts(current)
+    seen = {part.casefold() for part in current_parts}
+    for part in _spec_parts(new):
+        if part.casefold() not in seen:
+            current_parts.append(part)
+            seen.add(part.casefold())
+    return ", ".join(current_parts)
 
 
 @dataclass
@@ -151,7 +163,7 @@ class Connector:
                 report.auth_failures.append(source.email)
                 continue
             try:
-                entries = await asyncio.to_thread(source.pull)
+                entries = await run_blocking(source.pull)
             except KeepAuthError as err:
                 _LOGGER.error("%s", err)
                 report.source_errors[source.email] = str(err)
@@ -197,7 +209,7 @@ class Connector:
                 continue
             source.mark_done(done)
             try:
-                await asyncio.to_thread(source.push)
+                await run_blocking(source.push)
             except Exception as err:  # noqa: BLE001
                 # The source has dropped its local state; next cycle re-reads
                 # Keep, finds these items still there, sees they are already
@@ -216,7 +228,9 @@ class Connector:
                 report.removed_from_keep += len(done)
         return report
 
-    async def _transfer(self, entry: KeepEntry, existing: dict[str, str], report: SyncReport) -> bool:
+    async def _transfer(
+        self, entry: KeepEntry, existing: dict[str, BringListItem], report: SyncReport
+    ) -> bool:
         """Copy one Keep entry to Bring!. True if it can be removed from Keep."""
         items = self.itemize(entry.text)
         if not items:
@@ -224,28 +238,31 @@ class Connector:
         all_ok = True
         for item in items:
             key = item.name.casefold()
-            spec = item.spec
-            already = key in existing
-            if already:
-                spec = merge_spec(existing[key], item.spec)
-                if spec == existing[key]:
+            name, spec = item.name, item.spec
+            current = existing.get(key)
+            if current is not None:
+                # Update the item under the exact name Bring! already has, so
+                # a different capitalisation can't create a second entry.
+                name = current.name
+                spec = merge_spec(current.spec, item.spec)
+                if spec == current.spec:
                     report.already_on_list.append(item.label())
                     continue
             try:
-                await self.sink.add(item.name, spec)
+                await self.sink.add(name, spec)
             except Exception as err:  # noqa: BLE001
                 all_ok = False
                 report.failed.append(item.label())
                 _LOGGER.warning("Bring! refused %r: %s: %s", item.label(), type(err).__name__, err)
                 continue
-            existing[key] = spec
-            (report.updated if already else report.added).append(
-                ParsedItem(item.name, spec).label()
+            existing[key] = BringListItem(name, spec)
+            (report.updated if current is not None else report.added).append(
+                ParsedItem(name, spec).label()
             )
         return all_ok
 
     async def _update_alert(
-        self, report: SyncReport, existing: dict[str, str], all_accounts_ok: bool
+        self, report: SyncReport, existing: dict[str, BringListItem], all_accounts_ok: bool
     ) -> None:
         if not self.alert_in_bring:
             return
@@ -283,6 +300,33 @@ def write_heartbeat(path: Path, report: SyncReport) -> None:
         _LOGGER.debug("Could not write heartbeat %s: %s", path, err)
 
 
+class CycleTimeout(Exception):
+    """A sync cycle took far longer than it ever should."""
+
+
+async def _cycle_or_stop(connector: Connector, stop: asyncio.Event) -> SyncReport | None:
+    """Run one sync cycle; return None if asked to stop first. Raises CycleTimeout if stuck."""
+    cycle = asyncio.ensure_future(connector.sync_once())
+    stopper = asyncio.ensure_future(stop.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {cycle, stopper}, timeout=CYCLE_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        stopper.cancel()
+    if cycle in done:
+        return cycle.result()
+    cycle.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await cycle
+    if stop.is_set():
+        return None
+    # Any thread still stuck on the old Keep connection is abandoned; start fresh.
+    for source in connector.sources:
+        source.reset()
+    raise CycleTimeout(f"a sync cycle took longer than {CYCLE_TIMEOUT_SECONDS:g}s and was abandoned")
+
+
 async def run_forever(
     connector: Connector,
     *,
@@ -290,11 +334,14 @@ async def run_forever(
     heartbeat_file: Path | None,
     stop: asyncio.Event,
 ) -> None:
+    """Sync every ``interval`` seconds until ``stop`` is set. Never raises."""
     failures = 0
     while not stop.is_set():
         started = time.monotonic()
         try:
-            report = await connector.sync_once()
+            report = await _cycle_or_stop(connector, stop)
+            if report is None:
+                break
         except (BringAuthError, BringListNotFound) as err:
             failures += 1
             _LOGGER.error("%s", err)
@@ -308,7 +355,8 @@ async def run_forever(
             if report.healthy and heartbeat_file is not None:
                 write_heartbeat(heartbeat_file, report)
 
-        delay = interval if failures == 0 else min(interval * 2**failures, MAX_BACKOFF_SECONDS)
+        backoff = interval * 2 ** min(failures, 16)  # exponent capped: no float overflow
+        delay = interval if failures == 0 else min(backoff, MAX_BACKOFF_SECONDS)
         delay = max(0.0, delay - (time.monotonic() - started))
         try:
             await asyncio.wait_for(stop.wait(), timeout=delay)

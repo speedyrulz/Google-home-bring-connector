@@ -291,4 +291,5 @@ in-memory fake Google Keep and Bring! servers. No accounts are needed.
 | `src/keep_to_bring/catalog.py` | Matches spoken names to Bring!'s item catalogue. |
 | `src/keep_to_bring/parsing.py` | Splits off quantities ("2 lbs chicken"). |
 | `src/keep_to_bring/google_token.py` | Turns the browser `oauth_token` cookie into a master token. |
+| `src/keep_to_bring/net.py` | Timeouts for the Google libraries (which set none) and shutdown-safe worker threads. |
 | `src/keep_to_bring/cli.py` | `setup`, `get-token`, `check`, `once`, `run`, `health`. |
