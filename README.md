@@ -65,9 +65,12 @@ What it does for you:
 
 ## Step 1: Check that Google Home adds to Google Keep
 
-1. Open the **Google Home** app → your profile picture → **Assistant
-   settings** (or **Gemini settings**) → **Notes & Lists**. Choose
-   **Google Keep**. (On most accounts this is already the default.)
+1. Open the **Google Home** app → tap your profile picture → **Home
+   settings** → **Gemini for Home voice assistant** (called **Google
+   Assistant** on older setups) → **Notes & lists**. Select **Google Keep**.
+   (On most accounts this is already the default.) In August 2026 a
+   Google Home bug showed this page as disabled. Google fixed it in September
+   2026, so update the Google Home app if it still looks greyed out.
 2. Say **"Hey Google, add test to my shopping list."**
 3. Open **Google Keep** on your phone or at <https://keep.google.com>.
    You should see a checklist called **Shopping list** containing *test*.
