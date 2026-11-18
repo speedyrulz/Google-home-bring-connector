@@ -13,16 +13,27 @@ dependencies = [
     "gpsoauth>=1.1",
     "bring-api>=1.1,<2",
     "aiohttp>=3.10",
+    # System tray icon - installed automatically on Windows.
+    "pystray>=0.19; sys_platform == 'win32'",
+    "Pillow>=10; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
+# Tray icon on Linux/macOS desktops: pip install ".[tray]"
+tray = ["pystray>=0.19", "Pillow>=10"]
 test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "pystray>=0.19",
+    "Pillow>=10",
 ]
 
 [project.scripts]
 keep-to-bring = "keep_to_bring.cli:main"
+
+# Windowless launcher for the tray app (no console window on Windows).
+[project.gui-scripts]
+keep-to-bring-tray = "keep_to_bring.tray:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

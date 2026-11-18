@@ -327,26 +327,52 @@ async def _cycle_or_stop(connector: Connector, stop: asyncio.Event) -> SyncRepor
     raise CycleTimeout(f"a sync cycle took longer than {CYCLE_TIMEOUT_SECONDS:g}s and was abandoned")
 
 
+CycleCallback = Callable[[SyncReport | None, BaseException | None], None]
+
+
+async def _sleep(delay: float, stop: asyncio.Event, wake: asyncio.Event | None) -> None:
+    """Sleep up to ``delay`` seconds, returning early if ``stop`` or ``wake`` is set."""
+    waiters = [asyncio.ensure_future(event.wait()) for event in (stop, wake) if event is not None]
+    try:
+        await asyncio.wait(waiters, timeout=delay, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+    if wake is not None:
+        wake.clear()
+
+
 async def run_forever(
     connector: Connector,
     *,
     interval: float,
     heartbeat_file: Path | None,
     stop: asyncio.Event,
+    wake: asyncio.Event | None = None,
+    on_cycle: CycleCallback | None = None,
 ) -> None:
-    """Sync every ``interval`` seconds until ``stop`` is set. Never raises."""
+    """Sync every ``interval`` seconds until ``stop`` is set. Never raises.
+
+    Setting ``wake`` starts the next cycle immediately ("sync now").
+    ``on_cycle(report, error)`` is called after every cycle with either the
+    report or the exception that ended the cycle (used by the tray icon).
+    """
     failures = 0
     while not stop.is_set():
         started = time.monotonic()
+        report: SyncReport | None = None
+        error: BaseException | None = None
         try:
             report = await _cycle_or_stop(connector, stop)
             if report is None:
                 break
         except (BringAuthError, BringListNotFound) as err:
             failures += 1
+            error = err
             _LOGGER.error("%s", err)
         except Exception as err:  # noqa: BLE001
             failures += 1
+            error = err
             _LOGGER.warning("Sync failed (%s: %s); will retry.", type(err).__name__, err)
             _LOGGER.debug("Sync failure details", exc_info=True)
         else:
@@ -355,10 +381,13 @@ async def run_forever(
             if report.healthy and heartbeat_file is not None:
                 write_heartbeat(heartbeat_file, report)
 
+        if on_cycle is not None:
+            try:
+                on_cycle(report, error)
+            except Exception:  # noqa: BLE001 - a status display must never stop syncing
+                _LOGGER.debug("Status callback failed", exc_info=True)
+
         backoff = interval * 2 ** min(failures, 16)  # exponent capped: no float overflow
         delay = interval if failures == 0 else min(backoff, MAX_BACKOFF_SECONDS)
         delay = max(0.0, delay - (time.monotonic() - started))
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=delay)
-        except TimeoutError:
-            pass
+        await _sleep(delay, stop, wake)
