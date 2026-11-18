@@ -7,12 +7,11 @@ import asyncio
 import getpass
 import logging
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
-
-import aiohttp
 
 from . import __version__
 from .bring_sink import BringAuthError, BringListNotFound, BringSink
@@ -32,6 +31,8 @@ from .config import (
 from .google_token import COOKIE_INSTRUCTIONS, TokenExchangeError, exchange_oauth_cookie
 from .keep_source import KeepAuthError, KeepSource
 from .net import run_blocking
+from .service import account_reloader, build_connector, http_session, quiet_noisy_loggers
+from .single_instance import SingleInstance
 from .sync import Connector, run_forever, write_heartbeat
 
 _LOGGER = logging.getLogger("keep_to_bring")
@@ -61,9 +62,7 @@ def _setup_logging(level: str) -> None:
         format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    if level != "DEBUG":
-        for noisy in ("gkeepapi", "urllib3", "bring_api", "aiohttp"):
-            logging.getLogger(noisy).setLevel(logging.WARNING)
+    quiet_noisy_loggers(level)
 
 
 def _load(args: argparse.Namespace) -> Settings:
@@ -79,40 +78,9 @@ def _load(args: argparse.Namespace) -> Settings:
     return settings
 
 
-def _sources(settings: Settings) -> list[KeepSource]:
-    return [
-        KeepSource(account, settings.keep_list_titles, settings.keep_action)
-        for account in settings.google_accounts
-    ]
-
-
-def _account_reloader(args: argparse.Namespace):
-    """Re-read the settings file so a token renewed with `get-token` is used without a restart."""
-    env_file = resolve_env_file(args.env_file)
-
-    def reload() -> dict[str, GoogleAccount]:
-        try:
-            settings = load_settings(load_environment(env_file))
-        except ConfigError:
-            return {}
-        return {account.email.casefold(): account for account in settings.google_accounts}
-
-    return reload
-
-
 def _connector(settings: Settings, sink: BringSink, args: argparse.Namespace | None = None) -> Connector:
-    return Connector(
-        _sources(settings),
-        sink,
-        parse_quantities=settings.parse_quantities,
-        split_items=settings.split_items,
-        alert_in_bring=settings.alert_in_bring,
-        reload_accounts=_account_reloader(args) if args is not None else None,
-    )
-
-
-def _session() -> aiohttp.ClientSession:
-    return aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=60))
+    reload = account_reloader(resolve_env_file(args.env_file)) if args is not None else None
+    return build_connector(settings, sink, reload)
 
 
 def _ask(prompt: str, default: str | None = None, *, secret: bool = False) -> str:
@@ -194,7 +162,7 @@ def _verify_keep(account: GoogleAccount, titles: Sequence[str]) -> bool:
 
 
 async def _verify_bring(email: str, password: str, list_name: str | None) -> BringSink:
-    async with _session() as session:
+    async with http_session() as session:
         sink = BringSink(email, password, list_name, session)
         await sink.connect()
         return sink
@@ -370,7 +338,7 @@ async def _check(settings: Settings) -> int:
     ok = True
     print(f"Keep list name(s): {', '.join(settings.keep_list_titles)}")
     print(f"After copying, items are {'deleted from' if settings.keep_action == 'delete' else 'checked off in'} Keep.")
-    async with _session() as session:
+    async with http_session() as session:
         sink = BringSink(settings.bring_email, settings.bring_password, settings.bring_list_name, session)
         try:
             await sink.connect()
@@ -412,7 +380,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 async def _once(settings: Settings) -> int:
-    async with _session() as session:
+    async with http_session() as session:
         sink = BringSink(settings.bring_email, settings.bring_password, settings.bring_list_name, session)
         connector = _connector(settings, sink)
         try:
@@ -451,7 +419,7 @@ async def _run(settings: Settings, args: argparse.Namespace) -> int:
         accounts,
         settings.poll_interval,
     )
-    async with _session() as session:
+    async with http_session() as session:
         sink = BringSink(settings.bring_email, settings.bring_password, settings.bring_list_name, session)
         connector = _connector(settings, sink, args)
         await run_forever(
@@ -466,10 +434,44 @@ async def _run(settings: Settings, args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     settings = _load(args)
+    lock = SingleInstance(settings.data_dir)
+    if not lock.acquire():
+        _LOGGER.error(
+            "Keep-to-Bring is already running for these settings (perhaps as the tray icon). "
+            "Quit the other copy first."
+        )
+        return 1
     try:
         return asyncio.run(_run(settings, args))
     except KeyboardInterrupt:  # pragma: no cover - Windows Ctrl+C
         return 0
+    finally:
+        lock.release()
+
+
+def cmd_tray(args: argparse.Namespace) -> int:
+    from . import tray
+
+    env_file = resolve_env_file(args.env_file).resolve()
+    if tray.is_windows() and not args.foreground:
+        # Start the windowless tray program and return, so this terminal can be closed.
+        subprocess.Popen(
+            tray.launcher_command(env_file),
+            cwd=str(env_file.parent),
+            creationflags=tray.DETACHED_PROCESS | tray.CREATE_NEW_PROCESS_GROUP,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        print(
+            "Keep -> Bring is now running in the system tray: look for the basket icon near\n"
+            "the clock (it may be hidden under the ^ arrow). It also starts automatically\n"
+            "when you sign in to Windows. You can close this window."
+        )
+        return 0
+    tray_args = ["--env-file", str(env_file)] + (["--verbose"] if args.verbose else [])
+    return tray.main(tray_args)
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -509,6 +511,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="settings file to use (default: $KEEP_TO_BRING_ENV_FILE or ./.env)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="show debug logging")
+    # Used by the tray icon's "Run setup" / "Renew Google login": keep the
+    # console window open until the user has read the result.
+    parser.add_argument("--pause", action="store_true", help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     sub.add_parser("setup", help="interactive first-time setup (creates the settings file)").set_defaults(func=cmd_setup)
@@ -519,6 +524,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="test the settings without changing anything").set_defaults(func=cmd_check)
     sub.add_parser("once", help="copy new items once, then exit").set_defaults(func=cmd_once)
     sub.add_parser("run", help="keep copying new items until stopped").set_defaults(func=cmd_run)
+    tray_parser = sub.add_parser("tray", help="run in the background with a system tray icon (Windows)")
+    tray_parser.add_argument(
+        "--foreground", action="store_true", help="stay attached to this terminal instead of detaching"
+    )
+    tray_parser.set_defaults(func=cmd_tray)
     sub.add_parser("health", help="exit 0 if the last sync succeeded recently").set_defaults(func=cmd_health)
     return parser
 
@@ -530,10 +540,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 1
     try:
-        return int(args.func(args) or 0)
+        code = int(args.func(args) or 0)
     except KeyboardInterrupt:
         print("\nCancelled.")
-        return 130
+        code = 130
+    except SystemExit as exc:
+        if not args.pause:
+            raise
+        if isinstance(exc.code, str):
+            print(exc.code, file=sys.stderr)
+        code = exc.code if isinstance(exc.code, int) else 1
+    if args.pause:
+        try:
+            input("\nPress Enter to close this window...")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

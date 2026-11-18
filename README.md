@@ -111,14 +111,51 @@ python -m venv .venv
 # Mac / Linux:  source .venv/bin/activate
 pip install .
 keep-to-bring setup        # answer the questions
-keep-to-bring run          # keep this window open; Ctrl+C stops it
+keep-to-bring tray         # Windows: runs in the system tray; you can close this window
 ```
 
-To start it automatically on Windows, open **Task Scheduler → Create
-Basic Task**. Choose **When I log on**, action **Start a program**. Set
-*program* to the full path of `.venv\Scripts\keep-to-bring.exe`, *arguments*
-to `run`, and *start in* to the project folder. Also turn off sleep in
-Windows power settings.
+On Mac or Linux, use `keep-to-bring run` instead of `tray`, and keep that
+window open (Ctrl+C stops it). Linux desktops can also use the tray icon
+after `pip install ".[tray]"`.
+
+#### The system tray icon (Windows)
+
+`keep-to-bring tray` starts the connector in the background with no window.
+A **basket icon** appears next to the clock. Windows may hide new icons
+under the **^** arrow; drag it onto the taskbar to keep it in view. The
+basket's colour shows how things are going:
+
+| Colour | Meaning |
+| --- | --- |
+| 🟢 Green | Working: items are being copied to Bring! |
+| 🟠 Orange | Temporary problem (no internet, Google or Bring! busy). It keeps retrying by itself. |
+| 🔴 Red | Needs you: for example the Google login needs renewing. A notification tells you what to do. |
+| ⚪ Grey | Starting up |
+
+**Right-click** the icon for the menu. **Left-click** it to sync right away.
+
+- **Sync now**: check Google Keep immediately instead of waiting a minute.
+- **Renew Google login…** and **Run setup again…**: open a window with the
+  same questions as during setup.
+- **Open settings file** and **Open log**: open them in Notepad. Changes you
+  save in the settings file are picked up automatically.
+- **Start with Windows**: on by default. The connector starts by itself
+  every time you sign in. Untick it to stop that.
+- **Notify me when items are added**: a pop-up for every item copied to
+  Bring! (off by default).
+- **Quit**: stop the connector. Start it again from the Start menu
+  (search for "Keep to Bring"), or it starts at your next sign-in.
+
+Only one copy runs at a time, so starting it again is harmless. The computer
+must be on (and not asleep) for items to be copied. Items said while it's
+off simply wait in Google Keep. To stop the PC from sleeping, go to
+**Settings → System → Power**.
+
+**Upgrading from an older version** that ran in a PowerShell window: stop
+the old window with Ctrl+C. In the project folder, download the new files,
+then run `.venv\Scripts\activate`, `pip install .` and
+`keep-to-bring tray`. If you set up a Task Scheduler entry, delete it, since
+the tray app now handles starting with Windows.
 
 ### What the setup asks
 
@@ -176,6 +213,9 @@ docker compose run --rm keep-to-bring get-token   # Docker
 keep-to-bring get-token                           # plain Python
 ```
 
+With the tray icon (it turns red), right-click it and choose **Renew Google
+login…** instead.
+
 The running connector picks up the new token within a minute or two. No
 restart is needed. Everything that piled up in Keep is then copied over, and
 the reminder disappears from Bring!.
@@ -184,7 +224,8 @@ the reminder disappears from Bring!.
 
 `setup` covers the essentials. To change anything else, edit the settings
 file (`data/.env` or `.env`), then restart: `docker compose restart`, or stop
-and start `keep-to-bring run`.
+and start `keep-to-bring run`. The tray app notices saved changes by itself
+(right-click → **Open settings file**).
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -211,6 +252,9 @@ and start `keep-to-bring run`.
 | "Google refused the code" during setup | The browser code works once and expires within minutes. Repeat the browser steps and paste the new code right away. Make sure the email matches the account you signed in with. |
 | Docker: "permission denied" writing `/data` | Run `mkdir -p data` *before* the first `docker compose` command. If your user id isn't 1000 (`id -u`), start with `PUID=$(id -u) PGID=$(id -g) docker compose up -d`. |
 | Item names look odd | Turn off `PARSE_QUANTITIES` if amounts are being split off wrongly. |
+| I can't see the basket icon | Click the **^** arrow next to the clock; Windows hides new icons there. Drag it onto the taskbar to keep it visible. If it isn't there either, start it from the Start menu ("Keep to Bring"). |
+| "Keep → Bring is already running" | It's already in the tray (maybe hidden under **^**). If you also have an old PowerShell window running `keep-to-bring run`, close that one. |
+| Tray icon is red | Hover over it to see why, or right-click → **Open log**. The usual fix is right-click → **Renew Google login…**. |
 
 To update to a newer version: download the new files, then run
 `docker compose build --pull && docker compose up -d`, or `pip install .`
@@ -292,4 +336,8 @@ in-memory fake Google Keep and Bring! servers. No accounts are needed.
 | `src/keep_to_bring/parsing.py` | Splits off quantities ("2 lbs chicken"). |
 | `src/keep_to_bring/google_token.py` | Turns the browser `oauth_token` cookie into a master token. |
 | `src/keep_to_bring/net.py` | Timeouts for the Google libraries (which set none) and shutdown-safe worker threads. |
-| `src/keep_to_bring/cli.py` | `setup`, `get-token`, `check`, `once`, `run`, `health`. |
+| `src/keep_to_bring/cli.py` | `setup`, `get-token`, `check`, `once`, `run`, `tray`, `health`. |
+| `src/keep_to_bring/service.py` | Runs the sync loop on a background thread for the tray app. |
+| `src/keep_to_bring/tray.py` | System tray icon, menu, notifications, Start-menu shortcut. |
+| `src/keep_to_bring/autostart.py` | "Start with Windows" (registry Run key) / Linux autostart. |
+| `src/keep_to_bring/single_instance.py` | Makes sure only one copy runs at a time. |

@@ -129,3 +129,65 @@ def test_get_token_updates_existing_account(env_file, bring_server, keep_server,
     saved = parse_env_file(env_file)
     assert saved["GOOGLE_MASTER_TOKEN"] == "aas_et/renewed"
     assert saved["BRING_PASSWORD"] == bring_server.password  # untouched
+
+
+def test_run_refuses_when_another_copy_holds_the_lock(env_file, bring_server, keep_server, tmp_path):
+    from keep_to_bring.single_instance import SingleInstance
+
+    write_config(env_file, bring_server, keep_server, tmp_path)
+    holder = SingleInstance(tmp_path / "data")
+    assert holder.acquire()
+    try:
+        assert cli.main(["--env-file", str(env_file), "run"]) == 1
+    finally:
+        holder.release()
+
+
+def test_pause_keeps_the_window_open_even_after_an_error(env_file, monkeypatch, capsys):
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+    assert cli.main(["--pause", "--env-file", str(env_file), "once"]) == 2
+    assert prompts and "Press Enter" in prompts[0]
+
+
+def test_pause_after_success(monkeypatch, env_file, tmp_path):
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+    env_file.write_text(f"DATA_DIR={tmp_path}\n")
+    (tmp_path / "heartbeat").write_text("ok")
+    assert cli.main(["--pause", "--env-file", str(env_file), "health"]) == 0
+    assert len(prompts) == 1
+
+
+def test_tray_command_runs_in_foreground_off_windows(env_file, monkeypatch):
+    from keep_to_bring import tray
+
+    calls = []
+    monkeypatch.setattr(tray, "is_windows", lambda: False)
+    monkeypatch.setattr(tray, "main", lambda argv: calls.append(argv) or 0)
+    assert cli.main(["--env-file", str(env_file), "tray"]) == 0
+    assert calls == [["--env-file", str(env_file.resolve())]]
+
+
+def test_tray_command_detaches_on_windows(env_file, monkeypatch, capsys):
+    from keep_to_bring import tray
+
+    launched = []
+    monkeypatch.setattr(tray, "is_windows", lambda: True)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda args, **kw: launched.append((args, kw)))
+    assert cli.main(["--env-file", str(env_file), "tray"]) == 0
+    (args, kwargs), = launched
+    assert args == tray.launcher_command(env_file.resolve())
+    assert kwargs["creationflags"] & tray.DETACHED_PROCESS
+    assert kwargs["cwd"] == str(env_file.parent.resolve())
+    assert "system tray" in capsys.readouterr().out
+
+
+def test_tray_foreground_flag_on_windows(env_file, monkeypatch):
+    from keep_to_bring import tray
+
+    calls = []
+    monkeypatch.setattr(tray, "is_windows", lambda: True)
+    monkeypatch.setattr(tray, "main", lambda argv: calls.append(argv) or 0)
+    assert cli.main(["-v", "--env-file", str(env_file), "tray", "--foreground"]) == 0
+    assert calls == [["--env-file", str(env_file.resolve()), "--verbose"]]
