@@ -435,6 +435,7 @@ def test_ampersands_are_escaped_in_windows_menus(monkeypatch):
 
 
 def test_launcher_prefers_the_windowless_program(tmp_path, monkeypatch):
+    monkeypatch.setattr(tray, "is_windows", lambda: False)  # Windows variant: test below
     env = tmp_path / ".env"
     monkeypatch.setattr(tray, "_scripts_dirs", lambda: [tmp_path / "missing", tmp_path])
     assert launcher_command(env)[1:] == ["-m", "keep_to_bring.tray", "--env-file", str(env)]

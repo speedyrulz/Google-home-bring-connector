@@ -16,7 +16,8 @@ def test_lock_file_records_pid_and_context_manager(tmp_path):
 
     with SingleInstance(tmp_path) as lock:
         assert lock.acquire()
-        assert (tmp_path / LOCK_FILE_NAME).read_text().strip() == str(os.getpid())
+    # Read after releasing: Windows forbids reading a locked byte range.
+    assert (tmp_path / LOCK_FILE_NAME).read_text().strip() == str(os.getpid())
     assert SingleInstance(tmp_path).acquire()
 
 
